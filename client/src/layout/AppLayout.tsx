@@ -203,6 +203,33 @@ export function AppLayout() {
       <main className="app-main-dms">
         <Outlet />
       </main>
+
+      <nav className="mob-nav-dms">
+        {navLinks.map((l) => (
+          <NavLink
+            key={l.to}
+            to={l.to}
+            end={l.end}
+            className={({ isActive }) =>
+              cn('mob-nav-item-dms', isActive && 'active')
+            }
+          >
+            <l.icon className="size-5" />
+            <span>{l.label}</span>
+          </NavLink>
+        ))}
+        {canSeeAdmin(user?.role) ? (
+          <NavLink
+            to="/admin"
+            className={({ isActive }) =>
+              cn('mob-nav-item-dms', isActive && 'active')
+            }
+          >
+            <Shield className="size-5" />
+            <span>Админ</span>
+          </NavLink>
+        ) : null}
+      </nav>
     </div>
   )
 }
