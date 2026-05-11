@@ -15,7 +15,6 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import { DmsBanner, PageHeaderDms } from '@/components/dms/PageChrome'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
