@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, Navigate, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -10,6 +10,8 @@ import {
   Shield,
   ClipboardList,
   Menu,
+  LogOut,
+  User,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { studentHasConfirmedRoomBooking } from '@/lib/student-room-booking'
@@ -27,8 +29,15 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { NotificationBell } from '@/components/NotificationBell'
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
+
+const ROLE_LABEL: Record<string, string> = {
+  student: 'Оюутан',
+  admin: 'Удирдлага',
+  staff: 'Ажилтан',
+  accountant: 'Нягтлан бодогч',
+}
 
 const links = [
   { to: '/dashboard', label: 'Хяналтын самбар', icon: Home, end: true },
@@ -60,6 +69,7 @@ export function StudentRoute() {
 export function AppLayout() {
   const { user, setUser } = useAuth()
   const navigate = useNavigate()
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const applicationsMy = useQuery({
     queryKey: ['applications-my'],
@@ -110,7 +120,7 @@ export function AppLayout() {
     <div className="app-shell-dms">
       <header className="app-header-dms">
         <div className="app-header-inner-dms">
-          <Sheet>
+          <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
             <SheetTrigger
               className={cn(
                 buttonVariants({ variant: 'outline', size: 'icon-sm' }),
@@ -120,27 +130,78 @@ export function AppLayout() {
             >
               <Menu className="size-4" />
             </SheetTrigger>
-            <SheetContent side="left" className="w-72">
-              <div className="mt-8 flex flex-col gap-1">
+            <SheetContent side="left" className="dms-drawer w-72 p-0 gap-0">
+              <SheetTitle className="sr-only">Цэс</SheetTitle>
+
+              {/* Brand header */}
+              <div className="dms-drawer-head">
+                <img
+                  src="/brand-muis-logo.png"
+                  alt="МУИС"
+                  className="dms-drawer-logo"
+                />
+                <div className="relative z-10">
+                  <div className="dms-drawer-brand-name">DMS · МУИС</div>
+                  <div className="dms-drawer-brand-sub">Дотуур байрны мэдээллийн систем</div>
+                </div>
+              </div>
+
+              {/* User info */}
+              <div className="dms-drawer-user">
+                <Avatar className="size-11 shrink-0">
+                  {user?.avatarUrl ? <AvatarImage src={user.avatarUrl} alt="" /> : null}
+                  <AvatarFallback>{initials}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <div className="dms-drawer-user-name">
+                    {user?.firstName} {user?.lastName}
+                  </div>
+                  <div className="dms-drawer-user-role">
+                    {ROLE_LABEL[user?.role ?? ''] ?? user?.role}
+                  </div>
+                </div>
+              </div>
+
+              {/* Nav links */}
+              <nav className="dms-drawer-nav">
                 {navLinks.map((l) => (
-                  <Link
+                  <NavLink
                     key={l.to}
                     to={l.to}
-                    className={cn(buttonVariants({ variant: 'ghost' }), 'justify-start gap-2')}
+                    end={l.end}
+                    onClick={() => setMenuOpen(false)}
+                    className={({ isActive }) => cn('dms-drawer-link', isActive && 'active')}
                   >
-                    <l.icon className="size-4" />
+                    <l.icon className="size-5 shrink-0" />
                     {l.label}
-                  </Link>
+                  </NavLink>
                 ))}
                 {canSeeAdmin(user?.role) ? (
-                  <Link
+                  <NavLink
                     to="/admin"
-                    className={cn(buttonVariants({ variant: 'ghost' }), 'justify-start gap-2')}
+                    onClick={() => setMenuOpen(false)}
+                    className={({ isActive }) => cn('dms-drawer-link', isActive && 'active')}
                   >
-                    <Shield className="size-4" />
+                    <Shield className="size-5 shrink-0" />
                     Админ
-                  </Link>
+                  </NavLink>
                 ) : null}
+              </nav>
+
+              {/* Footer */}
+              <div className="dms-drawer-footer">
+                <NavLink
+                  to="/profile"
+                  onClick={() => setMenuOpen(false)}
+                  className={({ isActive }) => cn('dms-drawer-link', isActive && 'active')}
+                >
+                  <User className="size-5 shrink-0" />
+                  Профайл
+                </NavLink>
+                <button className="dms-drawer-logout" onClick={logout}>
+                  <LogOut className="size-5 shrink-0" />
+                  Гарах
+                </button>
               </div>
             </SheetContent>
           </Sheet>
