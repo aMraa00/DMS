@@ -16,3 +16,8 @@ export declare function broadcastInAppNotifications(opts: {
  * Серверт эхлэхэд нэг удаа ажиллуулж, дараа нь цаг тутам шалгана.
  */
 export declare function scheduleContractDeadlineReminders(): void;
+/**
+ * Идэвхтэй оюутанг жижүүрийн жагсаалтад синк үргэлжлүүлнэ.
+ * Өдөр бүр (кампусын өдөр — Ховд/Жаргалант цагийн бүсээр тооцоолох, нэг удаа) тухайн өдрийн жижүүрийнд мэдэгдэл илгээнэ.
+ */
+export declare function scheduleDailyDutyReminders(): void;

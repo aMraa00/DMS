@@ -11,6 +11,7 @@ import { StorageRequest } from '../../models/StorageRequest.model.js';
 import { authenticate, requireRoles } from '../../middleware/auth.middleware.js';
 import { assertExitNoticeDays, assertGuestVisitWindow, assertLeaveDays, } from '../../services/daily-rules.service.js';
 import { notifyUsersWithRoles } from '../../services/notification.service.js';
+import { dateKeyCampusDay, dutyAssignedUserForDate } from '../../services/duty-roster.service.js';
 export const dailyRouter = Router();
 dailyRouter.use(authenticate);
 dailyRouter.use(requireRoles('student'));
@@ -30,6 +31,25 @@ async function studentHasActiveRoomBooking(userId) {
         .lean();
     return !!doc;
 }
+dailyRouter.get('/duty/my-day', async (req, res) => {
+    const dateKey = dateKeyCampusDay();
+    const assigned = await dutyAssignedUserForDate(dateKey);
+    const iamOnDutyToday = !!assigned && assigned.userIdStr === req.user.id;
+    let dutyHolder = null;
+    if (assigned) {
+        const name = `${assigned.userBrief.lastName ?? ''} ${assigned.userBrief.firstName ?? ''}`.trim() || '—';
+        dutyHolder = {
+            userId: assigned.userIdStr,
+            name,
+            studentId: assigned.userBrief.studentId?.trim(),
+        };
+    }
+    res.json({
+        dateKey,
+        iamOnDutyToday,
+        dutyHolder,
+    });
+});
 const guestPassBody = z.object({
     guestName: z.string().min(1),
     guestPhone: z.string().min(5),

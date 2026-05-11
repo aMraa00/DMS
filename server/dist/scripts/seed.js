@@ -8,7 +8,7 @@ import { seedDemoUsers } from './seed-demo-users.js';
 await connectDb();
 const dorms = await Dorm.insertMany([
     { name: '1-P байр', address: 'Номын сангийн хажууд', genderType: 'M', capacity: 200, totalFloors: 5, totalRooms: 80 },
-    { name: '2-P байр', address: 'Улаанбаатар', genderType: 'F', capacity: 200, totalFloors: 5, totalRooms: 80 },
+    { name: '2-P байр', address: 'Ховд аймаг, Жаргалант суурин', genderType: 'F', capacity: 200, totalFloors: 5, totalRooms: 80 },
 ]);
 const roomsToCreate = [];
 for (const d of dorms) {

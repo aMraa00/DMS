@@ -21,6 +21,8 @@ export interface IUser {
     westLoginName?: string;
     role: Role;
     status: string;
+    /** Relative public URL served from /uploads/avatars/:id.:ext */
+    avatarUrl?: string;
     createdAt: Date;
     updatedAt: Date;
 }

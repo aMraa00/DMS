@@ -18,6 +18,8 @@ export interface IPayment {
     qrImage?: string;
     qpayShortUrl?: string;
     qpayDeeplinks?: unknown[];
+    createdAt?: Date;
+    updatedAt?: Date;
 }
 export declare const Payment: mongoose.Model<IPayment, {}, {}, {}, mongoose.Document<unknown, {}, IPayment, {}, {}> & IPayment & Required<{
     _id: mongoose.Types.ObjectId;

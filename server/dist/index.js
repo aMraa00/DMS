@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import express from 'express';
@@ -19,8 +21,9 @@ import { notificationsRouter } from './routes/v1/notifications.routes.js';
 import { inventoryRouter } from './routes/v1/inventory.routes.js';
 import { bookingRouter } from './routes/v1/booking.routes.js';
 import { bulletinRouter } from './routes/v1/bulletin.routes.js';
-import { scheduleContractDeadlineReminders } from './services/notification.service.js';
-/** Хялбар in-memory rate limiter — express-rate-limit суулгаагүй үед */
+import { scheduleContractDeadlineReminders, scheduleDailyDutyReminders } from './services/notification.service.js';
+import { syncActiveStudentsOntoDutyRoster } from './services/duty-roster.service.js';
+/** Хялбар in-memory rate limiter — general API (нэвтрэлтийг auth.routes дээр буруу оролдогоор тусдаа) */
 function createRateLimiter(opts) {
     const hits = new Map();
     return (req, res, next) => {
@@ -39,17 +42,19 @@ function createRateLimiter(opts) {
         next();
     };
 }
-const authLimiter = createRateLimiter({
-    windowMs: 15 * 60 * 1000,
-    max: 20,
-    message: 'Хэт олон оролдлого. 15 минутын дараа дахин оролдоно уу.',
-});
 const apiLimiter = createRateLimiter({
     windowMs: 60 * 1000,
     max: 300,
     message: 'API хэт ачаалалтай. Хэсэг хүлээгээд дахин оролдоно уу.',
 });
 const app = express();
+const uploadsRoot = path.join(process.cwd(), 'uploads');
+try {
+    fs.mkdirSync(path.join(uploadsRoot, 'avatars'), { recursive: true });
+}
+catch {
+    /* noop */
+}
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({
@@ -59,11 +64,12 @@ app.use(cors({
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
+app.use('/uploads', express.static(uploadsRoot));
 app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'dms-api' });
 });
 const v1 = express.Router();
-v1.use('/auth', authLimiter, authRouter);
+v1.use('/auth', authRouter);
 v1.use('/applications', apiLimiter, applicationRouter);
 v1.use('/rooms', apiLimiter, roomRouter);
 v1.use('/daily', apiLimiter, dailyRouter);
@@ -79,7 +85,17 @@ app.use('/api/v1', v1);
 app.use(notFound);
 app.use(errorHandler);
 await connectDb();
+try {
+    const r = await syncActiveStudentsOntoDutyRoster();
+    // eslint-disable-next-line no-console -- startup
+    if (r.added > 0)
+        console.log(`Duty roster: +${r.added} студент синклоно (${r.rosterSize} нийт бичлэг)`);
+}
+catch {
+    /* DB бэлэн болоогүй тохиолдол унахгүй */
+}
 scheduleContractDeadlineReminders();
+scheduleDailyDutyReminders();
 app.listen(env.PORT, () => {
     // eslint-disable-next-line no-console -- startup log
     console.log(`DMS API listening on http://localhost:${env.PORT}`);

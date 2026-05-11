@@ -14,6 +14,7 @@ import { Warning } from '../../models/Warning.model.js';
 import { authenticate, requireRoles } from '../../middleware/auth.middleware.js';
 import { broadcastInAppNotifications, createInAppNotification, } from '../../services/notification.service.js';
 import { moveStudentContractToRoom } from '../../services/move-contract-room.service.js';
+import { adminAssignStudentToDutyRoster, adminRemoveDutyRosterEntry, adminSetDutyRosterOrder, adminSwapDutyRosterAdjacent, appendStudentIfMissingToDutyRoster, previewDutyWeekCampus, rosterAllEntriesForAdmin, syncActiveStudentsOntoDutyRoster, } from '../../services/duty-roster.service.js';
 import { stubCreateContract } from './contract.routes.js';
 export const adminRouter = Router();
 adminRouter.use(authenticate);
@@ -134,6 +135,9 @@ adminRouter.patch('/users/:id', async (req, res) => {
     if (body.data.action === 'activate') {
         doc.status = 'active';
         doc.isDisabled = false;
+        if (doc.role === 'student') {
+            void appendStudentIfMissingToDutyRoster(doc._id);
+        }
     }
     else {
         doc.status = 'suspended';
@@ -708,5 +712,162 @@ adminRouter.post('/notifications/broadcast', async (req, res) => {
         link,
     });
     res.json({ ok: true, recipientCount });
+});
+adminRouter.get('/duty/roster', async (_req, res) => {
+    const entries = await rosterAllEntriesForAdmin();
+    const eligibleActive = entries.filter((e) => e.rosterEligibleDuty).length;
+    res.json({ entries, eligibleActive });
+});
+adminRouter.get('/duty/preview-week', async (req, res) => {
+    const q = z
+        .object({ days: z.coerce.number().min(1).max(42).optional().default(14) })
+        .safeParse(req.query);
+    if (!q.success) {
+        res.status(400).json({ error: q.error.flatten() });
+        return;
+    }
+    const schedule = await previewDutyWeekCampus(q.data.days ?? 14);
+    res.json({ schedule });
+});
+adminRouter.post('/duty/sync-roster-from-students', async (_req, res) => {
+    const summary = await syncActiveStudentsOntoDutyRoster();
+    res.json({ ok: true, ...summary });
+});
+const dutyMemberAddBody = z
+    .object({
+    userId: z.string().trim().optional(),
+    studentId: z.string().trim().optional(),
+})
+    .refine((o) => Boolean((o.userId && o.userId.length > 0) || (o.studentId && o.studentId.length > 0)), {
+    message: 'userId эсвэл studentId заавал',
+});
+adminRouter.post('/duty/roster/members', async (req, res) => {
+    if (req.user.role !== 'admin') {
+        res.status(403).json({ error: 'Зөвхөн админ жижүүрийн жагсаалт өөрчилнө' });
+        return;
+    }
+    const parsed = dutyMemberAddBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.flatten() });
+        return;
+    }
+    let targetUserId;
+    if (parsed.data.userId && parsed.data.userId.length > 0) {
+        if (!mongoose.isValidObjectId(parsed.data.userId)) {
+            res.status(400).json({ error: 'Хүчингүй userId' });
+            return;
+        }
+        targetUserId = parsed.data.userId;
+    }
+    if (!targetUserId && parsed.data.studentId && parsed.data.studentId.length > 0) {
+        const u = await User.findOne({ studentId: parsed.data.studentId })
+            .select('_id role')
+            .lean();
+        if (!u) {
+            res.status(404).json({ error: 'Оюутны код энэ кодтой этгээд системд алга.' });
+            return;
+        }
+        if (u.role !== 'student') {
+            res.status(400).json({ error: 'Зөвхөн оюутанд жижүүрийг томилно' });
+            return;
+        }
+        targetUserId = String(u._id);
+    }
+    if (!targetUserId) {
+        res.status(400).json({ error: 'Оюутан сонгогдоогүй' });
+        return;
+    }
+    const result = await adminAssignStudentToDutyRoster(targetUserId);
+    if (!result.ok) {
+        const map = {
+            not_found: 404,
+            not_student: 400,
+            duplicate: 409,
+            invalid_id: 400,
+        };
+        const msg = result.error === 'duplicate'
+            ? 'Энэ оюутан аль хэдийн жагсаалтад бүртгэгдсэн байна.'
+            : result.error === 'not_student'
+                ? 'Зөвхөн оюутанд жижүүрийг томилно.'
+                : 'Алдаа';
+        res.status(map[result.error] ?? 400).json({ error: msg });
+        return;
+    }
+    res.status(201).json({ ok: true, entryId: result.entryId, sequence: result.sequence });
+});
+adminRouter.delete('/duty/roster/members/:entryId', async (req, res) => {
+    if (req.user.role !== 'admin') {
+        res.status(403).json({ error: 'Зөвхөн админ жижүүрийн жагсаалт өөрчилнө' });
+        return;
+    }
+    const params = z.object({ entryId: z.string().min(1) }).safeParse(req.params);
+    if (!params.success || !mongoose.isValidObjectId(params.data.entryId)) {
+        res.status(400).json({ error: 'Хүчингүй бичлгийн Id' });
+        return;
+    }
+    const result = await adminRemoveDutyRosterEntry(params.data.entryId);
+    if (!result.ok) {
+        const status = result.error === 'not_found' ? 404 : 400;
+        res.status(status).json({ error: result.error === 'not_found' ? 'Олдсонгүй' : 'Алдаа' });
+        return;
+    }
+    res.json({ ok: true });
+});
+const dutyRosterOrderBody = z.object({
+    entryIds: z.array(z.string()).superRefine((arr, ctx) => {
+        if (!arr.length) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Хоосон массив' });
+            return;
+        }
+        for (const id of arr) {
+            if (!mongoose.isValidObjectId(id))
+                ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ObjectId буруу' });
+        }
+    }),
+});
+adminRouter.put('/duty/roster/order', async (req, res) => {
+    if (req.user.role !== 'admin') {
+        res.status(403).json({ error: 'Зөвхөн админ жижүүрийн жагсаалт өөрчилнө' });
+        return;
+    }
+    const parsed = dutyRosterOrderBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.flatten() });
+        return;
+    }
+    const result = await adminSetDutyRosterOrder(parsed.data.entryIds);
+    if (!result.ok) {
+        res.status(400).json({
+            error: 'Дараалал буруу: бүх бичлгийн оролцооны тоо тохирсон Id-уудаар яг нэгэн зэрэг ачаална.',
+        });
+        return;
+    }
+    res.json({ ok: true });
+});
+const dutyMoveBody = z.object({
+    direction: z.enum(['up', 'down']),
+});
+adminRouter.patch('/duty/roster/members/:entryId/move', async (req, res) => {
+    if (req.user.role !== 'admin') {
+        res.status(403).json({ error: 'Зөвхөн админ жижүүрийн жагсаалт өөрчилнө' });
+        return;
+    }
+    const params = z.object({ entryId: z.string().min(1) }).safeParse(req.params);
+    const body = dutyMoveBody.safeParse(req.body ?? {});
+    if (!params.success || !mongoose.isValidObjectId(params.data.entryId)) {
+        res.status(400).json({ error: 'Хүчингүй бичлгийн Id' });
+        return;
+    }
+    if (!body.success) {
+        res.status(400).json({ error: body.error.flatten() });
+        return;
+    }
+    const result = await adminSwapDutyRosterAdjacent(params.data.entryId, body.data.direction);
+    if (!result.ok) {
+        const status = result.error === 'not_found' ? 404 : 400;
+        res.status(status).json({ error: result.error === 'not_found' ? 'Олдсонгүй' : 'Алдаа' });
+        return;
+    }
+    res.json({ ok: true });
 });
 //# sourceMappingURL=admin.routes.js.map

@@ -21,6 +21,7 @@ const userSchema = new Schema({
         default: 'student',
     },
     status: { type: String, default: 'active' },
+    avatarUrl: { type: String, trim: true },
 }, { timestamps: true });
 export const User = mongoose.model('User', userSchema);
 //# sourceMappingURL=User.model.js.map

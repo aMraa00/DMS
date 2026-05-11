@@ -1,4 +1,7 @@
+import path from 'node:path';
+import fs from 'node:fs/promises';
 import { Router } from 'express';
+import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { User } from '../../models/User.model.js';
@@ -9,7 +12,35 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../uti
 import { forgetRefresh, hasRefresh, rememberRefresh } from '../../redis/client.js';
 import { westPayloadToProfile, westStudentLogin } from '../../services/west.service.js';
 import { createInAppNotification } from '../../services/notification.service.js';
+import { appendStudentIfMissingToDutyRoster } from '../../services/duty-roster.service.js';
 export const authRouter = Router();
+/** Зөвхөн буруу нэвтрэлтийн оролдлогод (амжилттай болон refresh/register тоологдохгүй) */
+const LOGIN_FAIL_WINDOW_MS = 5 * 60 * 1000;
+const LOGIN_FAIL_MAX = 15;
+const LOGIN_FAIL_MESSAGE = 'Буруу нэвтрэлтийн оролдлого хэт олон байна. 5 минутын дараа дахин оролдоно уу.';
+const loginFailByIp = new Map();
+function clientIp(req) {
+    return String(req.ip ?? req.socket?.remoteAddress ?? 'unknown');
+}
+function isLoginFlooded(ip) {
+    const now = Date.now();
+    const e = loginFailByIp.get(ip);
+    if (!e || now > e.resetAt)
+        return false;
+    return e.count >= LOGIN_FAIL_MAX;
+}
+function recordFailedLoginAttempt(ip) {
+    const now = Date.now();
+    let e = loginFailByIp.get(ip);
+    if (!e || now > e.resetAt) {
+        e = { count: 0, resetAt: now + LOGIN_FAIL_WINDOW_MS };
+        loginFailByIp.set(ip, e);
+    }
+    e.count++;
+}
+function resetFailedLoginAttempts(ip) {
+    loginFailByIp.delete(ip);
+}
 function refreshTtlSeconds() {
     const m = /^(\d+)([smhd])$/i.exec(env.JWT_REFRESH_EXPIRES.trim());
     if (!m)
@@ -25,6 +56,42 @@ function refreshTtlSeconds() {
     return n * 86400;
 }
 const refreshTtl = refreshTtlSeconds();
+const avatarsDir = path.join(process.cwd(), 'uploads', 'avatars');
+const AVATAR_MIME_EXT = new Map([
+    ['image/jpeg', 'jpg'],
+    ['image/png', 'png'],
+    ['image/webp', 'webp'],
+]);
+async function unlinkUserAvatarFiles(userId) {
+    for (const ext of AVATAR_MIME_EXT.values()) {
+        const p = path.join(avatarsDir, `${userId}.${ext}`);
+        await fs.unlink(p).catch(() => { });
+    }
+}
+const avatarUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 2 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+        cb(null, AVATAR_MIME_EXT.has(file.mimetype));
+    },
+});
+function avatarUploadMw(req, res, next) {
+    avatarUpload.single('avatar')(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                res.status(400).json({ error: 'Зургийн хэмжээ 2МБ-с хэтэрсэн байна.' });
+                return;
+            }
+            res.status(400).json({ error: 'Файл хүлээж чадсангүй.' });
+            return;
+        }
+        if (err) {
+            res.status(400).json({ error: 'Файл хүлээж чадсангүй.' });
+            return;
+        }
+        next();
+    });
+}
 const loginSchema = z.discriminatedUnion('mode', [
     z.object({
         mode: z.literal('west'),
@@ -41,6 +108,11 @@ authRouter.post('/login', async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: parsed.error.flatten() });
+        return;
+    }
+    const ip = clientIp(req);
+    if (isLoginFlooded(ip)) {
+        res.status(429).json({ error: LOGIN_FAIL_MESSAGE });
         return;
     }
     try {
@@ -60,11 +132,13 @@ authRouter.post('/login', async (req, res) => {
             const passwordNorm = parsed.data.password.trim();
             userDoc = await User.findOne({ email: emailNorm }).select('+passwordHash');
             if (!userDoc?.passwordHash) {
+                recordFailedLoginAttempt(ip);
                 res.status(401).json({ error: 'Invalid credentials' });
                 return;
             }
             const ok = await bcrypt.compare(passwordNorm, userDoc.passwordHash);
             if (!ok) {
+                recordFailedLoginAttempt(ip);
                 res.status(401).json({ error: 'Invalid credentials' });
                 return;
             }
@@ -77,6 +151,9 @@ authRouter.post('/login', async (req, res) => {
             res.status(403).json({ error: 'Таны эрх хязгаарлагдсан байна. Албатай холбогдоно уу.' });
             return;
         }
+        if (userDoc.role === 'student') {
+            void appendStudentIfMissingToDutyRoster(userDoc._id);
+        }
         const access = signAccessToken(String(userDoc._id), userDoc.role);
         const { token: refresh, jti } = signRefreshToken(String(userDoc._id), userDoc.role);
         await rememberRefresh(String(userDoc._id), jti, refreshTtl);
@@ -86,6 +163,7 @@ authRouter.post('/login', async (req, res) => {
             res.status(500).json({ error: 'Login failed' });
             return;
         }
+        resetFailedLoginAttempts(ip);
         res.json({
             user: { ...sanitizeUser(freshUser), hasPassword: !!freshUser.passwordHash },
         });
@@ -93,6 +171,7 @@ authRouter.post('/login', async (req, res) => {
     catch (e) {
         const msg = e instanceof Error ? e.message : 'Login error';
         if (parsed.data.mode === 'west') {
+            recordFailedLoginAttempt(ip);
             res.status(503).json({ error: msg });
             return;
         }
@@ -132,6 +211,7 @@ authRouter.post('/register', async (req, res) => {
         role: 'student',
         status: 'pending_verification',
     });
+    await appendStudentIfMissingToDutyRoster(user._id);
     await createInAppNotification(String(user._id), 'Тавтай морилно уу', 'Бүртгэл амжилттай. Дотуур байрны үйлчилгээг эндээс ашиглана уу.', '/dashboard');
     const access = signAccessToken(String(user._id), user.role);
     const { token: refresh, jti } = signRefreshToken(String(user._id), user.role);
@@ -227,6 +307,66 @@ authRouter.patch('/me', authenticate, async (req, res) => {
         user: { ...sanitizeUser(fresh), hasPassword: !!fresh.passwordHash },
     });
 });
+authRouter.post('/me/avatar', authenticate, avatarUploadMw, async (req, res) => {
+    const rf = req;
+    const file = rf.file;
+    const uid = req.user.id;
+    if (!file) {
+        res.status(400).json({
+            error: 'JPEG, PNG эсвэл WebP форматын зураг оруулна уу (хамгийн ихдээ 2МБ).',
+        });
+        return;
+    }
+    const ext = AVATAR_MIME_EXT.get(file.mimetype);
+    if (!ext) {
+        res.status(400).json({ error: 'Зөвхөн JPEG, PNG, WebP зураг зөвшөөрөгдөнө.' });
+        return;
+    }
+    try {
+        await unlinkUserAvatarFiles(uid);
+        const dest = path.join(avatarsDir, `${uid}.${ext}`);
+        await fs.writeFile(dest, file.buffer);
+    }
+    catch {
+        res.status(500).json({ error: 'Зургийг хадгалахад алдаа гарлаа.' });
+        return;
+    }
+    const rel = `/uploads/avatars/${uid}.${ext}`;
+    const user = await User.findById(uid);
+    if (!user) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+    }
+    user.avatarUrl = rel;
+    await user.save();
+    const freshUser = await User.findById(uid).select('+passwordHash');
+    if (!freshUser) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+    }
+    res.json({
+        user: { ...sanitizeUser(freshUser), hasPassword: !!freshUser.passwordHash },
+    });
+});
+authRouter.delete('/me/avatar', authenticate, async (req, res) => {
+    const uid = req.user.id;
+    const user = await User.findById(uid);
+    if (!user) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+    }
+    await unlinkUserAvatarFiles(uid);
+    user.avatarUrl = undefined;
+    await user.save();
+    const freshUser = await User.findById(uid).select('+passwordHash');
+    if (!freshUser) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+    }
+    res.json({
+        user: { ...sanitizeUser(freshUser), hasPassword: !!freshUser.passwordHash },
+    });
+});
 const changePasswordSchema = z.object({
     currentPassword: z.string().optional(),
     newPassword: z.string().min(8).max(200),
@@ -282,6 +422,7 @@ function sanitizeUser(u) {
         program: u.program,
         region: u.region,
         gender: u.gender,
+        avatarUrl: u.avatarUrl ?? undefined,
         isDisabled: u.isDisabled,
         hasInsurance: u.hasInsurance,
         role: u.role,

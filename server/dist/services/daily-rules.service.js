@@ -1,4 +1,5 @@
-const UB_TZ = process.env.DEFAULT_TZ ?? 'Asia/Ulaanbaatar';
+import { campusDayTimeZone } from '../config/campus-region.js';
+const GUEST_RULE_TZ = () => campusDayTimeZone();
 function calendarHourUTC(d, timeZone) {
     const h = new Intl.DateTimeFormat('en-GB', {
         timeZone,
@@ -13,9 +14,9 @@ export function assertGuestVisitWindow(checkIn, checkOut) {
     if (!(checkOut.getTime() > checkIn.getTime())) {
         throw new Error('checkOut нь checkIn-ээс хойш байна');
     }
-    const inH = calendarHourUTC(checkIn, UB_TZ);
+    const inH = calendarHourUTC(checkIn, GUEST_RULE_TZ());
     if (inH >= 20) {
-        throw new Error('Журмын Дэг-3: 20:00 цагаас хойш зочин нэвтрэх боломжгүй (УБ цагийн бүс)');
+        throw new Error('Журмын Дэг-3: 20:00 цагаас хойш зочин нэвтрэх боломжгүй (Ховд · Жаргалант — кампусын цагийн бүс)');
     }
 }
 /** 4.2.11: түр чөлөө 1–3 хоног */

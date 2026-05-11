@@ -1,7 +1,12 @@
 import mongoose from 'mongoose';
 import { Notification } from '../models/Notification.model.js';
 import { Contract } from '../models/Contract.model.js';
+import { DutyReminderSent } from '../models/DutyReminderSent.model.js';
 import { User } from '../models/User.model.js';
+import { dateKeyCampusDay, dutyAssignedUserForDate, syncActiveStudentsOntoDutyRoster, } from './duty-roster.service.js';
+function mongoDuplicateErr(e) {
+    return typeof e === 'object' && e !== null && 'code' in e && e.code === 11000;
+}
 export async function createInAppNotification(userId, title, message, link) {
     await Notification.create({
         title,
@@ -83,5 +88,39 @@ export function scheduleContractDeadlineReminders() {
     }
     void sendReminders();
     setInterval(() => void sendReminders(), INTERVAL_MS);
+}
+/**
+ * Идэвхтэй оюутанг жижүүрийн жагсаалтад синк үргэлжлүүлнэ.
+ * Өдөр бүр (кампусын өдөр — Ховд/Жаргалант цагийн бүсээр тооцоолох, нэг удаа) тухайн өдрийн жижүүрийнд мэдэгдэл илгээнэ.
+ */
+export function scheduleDailyDutyReminders() {
+    const INTERVAL_MS = 30 * 60 * 1000;
+    async function tick() {
+        try {
+            await syncActiveStudentsOntoDutyRoster();
+            const dayKey = dateKeyCampusDay();
+            const assigned = await dutyAssignedUserForDate(dayKey);
+            if (!assigned)
+                return;
+            try {
+                await DutyReminderSent.create({
+                    dateKey: dayKey,
+                    dutyUserId: new mongoose.Types.ObjectId(assigned.userIdStr),
+                    notifiedAt: new Date(),
+                });
+            }
+            catch (e) {
+                if (mongoDuplicateErr(e))
+                    return;
+                throw e;
+            }
+            await createInAppNotification(assigned.userIdStr, 'Өдрийн жижүүр', `${dayKey} өдөр танд жижүүрийн ээлж томилогдсон. Дотуур байрны дотоод журмыг хангаж «Өдөр тутмын» үйлчилгээнд хүлээгдэнэ.`, '/daily');
+        }
+        catch {
+            /* үл хамаарах цагийн алдаанаас сервер үл унах */
+        }
+    }
+    void tick();
+    setInterval(() => void tick(), INTERVAL_MS);
 }
 //# sourceMappingURL=notification.service.js.map
